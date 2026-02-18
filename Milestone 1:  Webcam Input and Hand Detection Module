@@ -1,0 +1,255 @@
+import cv2
+import mediapipe as mp
+import math
+import time
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+
+# ---------------- AUDIO SETUP ----------------
+devices = AudioUtilities.GetSpeakers()
+interface = devices.Activate(
+    IAudioEndpointVolume._iid_,
+    CLSCTX_ALL,
+    None
+)
+volume = cast(interface, POINTER(IAudioEndpointVolume))
+
+vol_range = volume.GetVolumeRange()
+min_vol = vol_range[0]
+max_vol = vol_range[1]
+
+
+# ---------------- GUI SETUP ----------------
+root = tk.Tk()
+root.title("HAND DETECTION INTERFACE")
+root.geometry("1200x650")
+root.configure(bg="#e9eef3")
+
+camera_running = False
+cap = None
+p_time = 0
+
+
+# ================= HEADING =================
+heading = tk.Label(
+    root,
+    text="VOLUME HAND GESTURE",
+    font=("Arial", 20, "bold"),
+    bg="#e9eef3"
+)
+heading.pack(pady=10)
+
+
+# ================= LEFT FRAME (CAMERA) =================
+left_frame = tk.Frame(root, bg="white", bd=2, relief="ridge")
+left_frame.place(x=20, y=70, width=750, height=520)
+
+video_label = tk.Label(left_frame)
+video_label.pack()
+
+
+# ================= RIGHT FRAME (PANEL) =================
+right_frame = tk.Frame(root, bg="white", bd=2, relief="ridge")
+right_frame.place(x=800, y=70, width=360, height=520)
+
+
+# ---------- Detection Status ----------
+status_title = tk.Label(
+    right_frame,
+    text="DETECTION STATUS",
+    font=("Arial", 12, "bold"),
+    bg="white"
+)
+status_title.pack(pady=10)
+
+cam_status = tk.Label(right_frame, text="Camera: Stopped",
+                      bg="white", fg="red")
+cam_status.pack()
+
+hand_status = tk.Label(right_frame, text="Hands Detected: 0",
+                       bg="white")
+hand_status.pack()
+
+fps_label = tk.Label(right_frame, text="FPS: 0",
+                     bg="white")
+fps_label.pack(pady=10)
+
+volume_label = tk.Label(right_frame, text="Volume: 0%",
+                        bg="white")
+volume_label.pack(pady=10)
+
+
+# ---------- Detection Parameters ----------
+param_title = tk.Label(
+    right_frame,
+    text="DETECTION PARAMETERS",
+    font=("Arial", 12, "bold"),
+    bg="white"
+)
+param_title.pack(pady=10)
+
+det_conf = tk.DoubleVar(value=0.7)
+track_conf = tk.DoubleVar(value=0.7)
+max_hands_var = tk.IntVar(value=1)
+
+tk.Label(right_frame, text="Detection Confidence",
+         bg="white").pack()
+
+det_slider = ttk.Scale(right_frame, from_=0.1, to=1.0,
+                       variable=det_conf, orient="horizontal")
+det_slider.pack()
+
+tk.Label(right_frame, text="Tracking Confidence",
+         bg="white").pack()
+
+track_slider = ttk.Scale(right_frame, from_=0.1, to=1.0,
+                         variable=track_conf, orient="horizontal")
+track_slider.pack()
+
+tk.Label(right_frame, text="Max Number of Hands",
+         bg="white").pack()
+
+hand_slider = ttk.Scale(right_frame, from_=1, to=2,
+                        variable=max_hands_var, orient="horizontal")
+hand_slider.pack(pady=10)
+
+
+# ---------- Detection Info ----------
+info_title = tk.Label(
+    right_frame,
+    text="DETECTION INFO",
+    font=("Arial", 12, "bold"),
+    bg="white"
+)
+info_title.pack(pady=10)
+
+landmark_label = tk.Label(right_frame, text="Landmarks: 21",
+                          bg="white")
+landmark_label.pack()
+
+connection_label = tk.Label(right_frame, text="Connections: 20",
+                            bg="white")
+connection_label.pack()
+
+resolution_label = tk.Label(right_frame, text="Resolution: 640x480",
+                            bg="white")
+resolution_label.pack()
+
+
+# ================= BUTTONS =================
+def start_camera():
+    global cap, camera_running, hands
+    if not camera_running:
+        cap = cv2.VideoCapture(0)
+        camera_running = True
+        cam_status.config(text="Camera: Active", fg="green")
+
+        hands = mp.solutions.hands.Hands(
+            min_detection_confidence=det_conf.get(),
+            min_tracking_confidence=track_conf.get(),
+            max_num_hands=int(max_hands_var.get())
+        )
+
+        update_frame()
+
+
+def stop_camera():
+    global camera_running
+    camera_running = False
+    cam_status.config(text="Camera: Stopped", fg="red")
+
+
+def capture_image():
+    if cap:
+        ret, frame = cap.read()
+        if ret:
+            cv2.imwrite("captured_image.jpg", frame)
+
+
+btn_start = ttk.Button(root, text="Start Camera", command=start_camera)
+btn_start.place(x=820, y=20)
+
+btn_stop = ttk.Button(root, text="Stop Camera", command=stop_camera)
+btn_stop.place(x=930, y=20)
+
+btn_capture = ttk.Button(root, text="Capture", command=capture_image)
+btn_capture.place(x=1040, y=20)
+
+
+# ================= FRAME UPDATE ===========(py -3.10 volume_control.py)======
+mp_draw = mp.solutions.drawing_utils
+
+def update_frame():
+    global p_time
+
+    if camera_running and cap:
+        ret, frame = cap.read()
+        if not ret:
+            return
+
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = hands.process(img_rgb)
+
+        hand_count = 0
+
+        if result.multi_hand_landmarks:
+            hand_count = len(result.multi_hand_landmarks)
+
+            for hand_landmarks in result.multi_hand_landmarks:
+                lm_list = []
+                h, w, _ = frame.shape
+                for lm in hand_landmarks.landmark:
+                    lm_list.append((int(lm.x * w), int(lm.y * h)))
+
+                x1, y1 = lm_list[4]
+                x2, y2 = lm_list[8]
+
+                length = math.hypot(x2 - x1, y2 - y1)
+
+                vol = min_vol + (length - 20) * (max_vol - min_vol) / (200 - 20)
+                vol = max(min(vol, max_vol), min_vol)
+
+                volume.SetMasterVolumeLevel(vol, None)
+
+                vol_percent = int((vol - min_vol) /
+                                  (max_vol - min_vol) * 100)
+
+                volume_label.config(text=f"Volume: {vol_percent}%")
+
+                cv2.circle(frame, (x1, y1), 10,
+                           (255, 0, 255), cv2.FILLED)
+                cv2.circle(frame, (x2, y2), 10,
+                           (255, 0, 255), cv2.FILLED)
+                cv2.line(frame, (x1, y1), (x2, y2),
+                         (255, 0, 255), 3)
+
+                mp_draw.draw_landmarks(
+                    frame,
+                    hand_landmarks,
+                    mp.solutions.hands.HAND_CONNECTIONS
+                )
+
+        hand_status.config(text=f"Hands Detected: {hand_count}")
+
+        # FPS
+        c_time = time.time()
+        fps = int(1 / (c_time - p_time)) if p_time != 0 else 0
+        p_time = c_time
+        fps_label.config(text=f"FPS: {fps}")
+
+        img = Image.fromarray(cv2.cvtColor(frame,
+                                           cv2.COLOR_BGR2RGB))
+        imgtk = ImageTk.PhotoImage(image=img)
+        video_label.imgtk = imgtk
+        video_label.configure(image=imgtk)
+
+        video_label.after(10, update_frame)
+
+
+root.mainloop()
