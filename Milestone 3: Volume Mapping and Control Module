@@ -1,0 +1,255 @@
+import cv2
+import mediapipe as mp
+import math
+import numpy as np
+import time
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+# ================= AUDIO SETUP =================
+devices = AudioUtilities.GetSpeakers()
+interface = devices.Activate(
+    IAudioEndpointVolume._iid_,
+    CLSCTX_ALL,
+    None
+)
+volume_control = cast(interface, POINTER(IAudioEndpointVolume))
+min_vol, max_vol = volume_control.GetVolumeRange()[:2]
+
+# ================= MEDIAPIPE SETUP =================
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+
+hands = mp_hands.Hands(
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7
+)
+
+# ================= GLOBAL VARIABLES =================
+cap = None
+camera_running = False
+p_time = 0
+volume_history = []
+prev_volume = 0
+smooth_factor = 0.2
+
+# ================= GUI SETUP =================
+root = tk.Tk()
+root.title("Hand Gesture Volume Control Dashboard")
+root.geometry("1400x800")
+root.configure(bg="#f4f6f8")
+
+# ================= HEADER =================
+header = tk.Frame(root, bg="#6C3EB8", height=60)
+header.pack(fill="x")
+
+tk.Label(header, text="Hand Gesture Volume Control Dashboard",
+         bg="#6C3EB8", fg="white",
+         font=("Arial", 16, "bold")).pack(side="left", padx=20)
+
+btn_style = {"bg": "#8E5BE8", "fg": "white", "bd": 0}
+
+# ================= MAIN LAYOUT =================
+main = tk.Frame(root, bg="#f4f6f8")
+main.pack(fill="both", expand=True, padx=20, pady=20)
+
+# -------- LEFT SIDE --------
+left_frame = tk.Frame(main, bg="white", bd=2, relief="ridge")
+left_frame.pack(side="left", fill="both", expand=True)
+
+video_label = tk.Label(left_frame)
+video_label.pack()
+
+fig = Figure(figsize=(5, 3), dpi=100)
+ax = fig.add_subplot(111)
+canvas = FigureCanvasTkAgg(fig, master=left_frame)
+canvas.get_tk_widget().pack(fill="both", expand=True)
+
+# -------- RIGHT PANEL --------
+right_panel = tk.Frame(main, width=400, bg="white", bd=2, relief="ridge")
+right_panel.pack(side="right", fill="y", padx=10)
+
+tk.Label(right_panel, text="DETECTION STATUS",
+         font=("Arial", 12, "bold"),
+         bg="white").pack(pady=10)
+
+cam_status = tk.Label(right_panel, text="Camera: Stopped",
+                      bg="white", fg="red")
+cam_status.pack()
+
+hand_status = tk.Label(right_panel, text="Hands Detected: 0",
+                       bg="white")
+hand_status.pack()
+
+fps_label = tk.Label(right_panel, text="FPS: 0",
+                     bg="white")
+fps_label.pack(pady=5)
+
+gesture_label = tk.Label(right_panel, text="Gesture: No Hand",
+                         bg="#cccccc", fg="black",
+                         font=("Arial", 12, "bold"), width=20)
+gesture_label.pack(pady=10)
+
+distance_value = tk.Label(right_panel,
+                          text="0 mm",
+                          font=("Arial", 18, "bold"),
+                          fg="#6C3EB8",
+                          bg="white")
+distance_value.pack(pady=5)
+
+progress = ttk.Progressbar(right_panel,
+                           orient="horizontal",
+                           length=250,
+                           maximum=200)
+progress.pack(pady=5)
+
+volume_label = tk.Label(right_panel, text="Volume: 0%",
+                        font=("Arial", 18, "bold"),
+                        fg="#009688",
+                        bg="white")
+volume_label.pack(pady=10)
+
+# -------- Volume History Graph --------
+hist_fig = Figure(figsize=(4, 2), dpi=100)
+hist_ax = hist_fig.add_subplot(111)
+hist_canvas = FigureCanvasTkAgg(hist_fig, master=right_panel)
+hist_canvas.get_tk_widget().pack(fill="both", expand=True, pady=10)
+
+# ================= BUTTON FUNCTIONS =================
+def start_camera():
+    global cap, camera_running
+    if not camera_running:
+        cap = cv2.VideoCapture(0)
+        camera_running = True
+        cam_status.config(text="Camera: Active", fg="green")
+        update_frame()
+
+def stop_camera():
+    global camera_running
+    camera_running = False
+    cam_status.config(text="Camera: Stopped", fg="red")
+
+tk.Button(header, text="▶ Start", command=start_camera, **btn_style).pack(side="right", padx=10)
+tk.Button(header, text="⏸ Stop", command=stop_camera, **btn_style).pack(side="right")
+
+# ================= MAIN UPDATE FUNCTION =================
+def update_frame():
+    global p_time, volume_history, prev_volume
+
+    if not camera_running:
+        return
+
+    success, img = cap.read()
+    if not success:
+        return
+
+    img = cv2.flip(img, 1)
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    results = hands.process(img_rgb)
+
+    hand_count = 0
+    gesture = "No Hand"
+    distance = 0
+    vol_percent = 0
+    gesture_color = "#cccccc"
+
+    if results.multi_hand_landmarks:
+        hand_count = len(results.multi_hand_landmarks)
+        handLms = results.multi_hand_landmarks[0]
+
+        thumb = handLms.landmark[4]
+        index = handLms.landmark[8]
+
+        h, w, _ = img.shape
+        x1, y1 = int(thumb.x * w), int(thumb.y * h)
+        x2, y2 = int(index.x * w), int(index.y * h)
+
+        distance = int(math.hypot(x2 - x1, y2 - y1))
+
+        # Gesture classification
+        if distance < 20:
+            gesture = "Closed"
+            gesture_color = "#ff4d4d"
+        elif distance < 80:
+            gesture = "Pinch"
+            gesture_color = "#ffc107"
+        else:
+            gesture = "Open Hand"
+            gesture_color = "#28a745"
+
+        # Draw Thumb-Index Connection
+        cv2.circle(img, (x1, y1), 10, (255, 0, 255), -1)
+        cv2.circle(img, (x2, y2), 10, (255, 0, 255), -1)
+        cv2.line(img, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+        cv2.putText(img, f"{distance} mm",
+                    (x1 + 20, y1 - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (0, 255, 255), 2)
+
+        # Smooth Volume Mapping
+        vol = np.interp(distance, [20, 200], [min_vol, max_vol])
+        vol_smoothed = prev_volume + smooth_factor * (vol - prev_volume)
+        prev_volume = vol_smoothed
+        volume_control.SetMasterVolumeLevel(vol_smoothed, None)
+
+        vol_percent = int(np.interp(vol_smoothed,
+                                    [min_vol, max_vol],
+                                    [0, 100]))
+
+        volume_history.append(vol_percent)
+        if len(volume_history) > 20:
+            volume_history.pop(0)
+
+        mp_draw.draw_landmarks(img, handLms,
+                               mp_hands.HAND_CONNECTIONS)
+
+    # Update UI
+    hand_status.config(text=f"Hands Detected: {hand_count}")
+    gesture_label.config(text=f"Gesture: {gesture}", bg=gesture_color)
+    distance_value.config(text=f"{distance} mm")
+    progress["value"] = distance
+    volume_label.config(text=f"Volume: {vol_percent}%")
+
+    # FPS
+    c_time = time.time()
+    fps = int(1 / (c_time - p_time)) if p_time != 0 else 0
+    p_time = c_time
+    fps_label.config(text=f"FPS: {fps}")
+
+    # Mapping Graph
+    ax.clear()
+    ax.plot(range(201), np.interp(range(201),
+                                  [20, 200],
+                                  [0, 100]))
+    ax.scatter(distance, vol_percent)
+    ax.set_title("Distance to Volume Mapping")
+    ax.set_xlabel("Distance")
+    ax.set_ylabel("Volume (%)")
+    canvas.draw()
+
+    # History Graph
+    hist_ax.clear()
+    hist_ax.bar(range(len(volume_history)),
+                volume_history)
+    hist_ax.set_ylim(0, 100)
+    hist_ax.set_title("Volume History")
+    hist_canvas.draw()
+
+    # Update Video
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = Image.fromarray(img)
+    imgtk = ImageTk.PhotoImage(image=img)
+    video_label.imgtk = imgtk
+    video_label.configure(image=imgtk)
+
+    video_label.after(10, update_frame)
+
+root.mainloop()
