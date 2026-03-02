@@ -1,0 +1,216 @@
+import cv2
+import mediapipe as mp
+import math
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+
+
+# ================= MEDIAPIPE SETUP =================
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,   # ✅ Detect only one hand
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7
+)
+
+cap = None
+camera_running = False
+
+
+# ================= GUI SETUP =================
+root = tk.Tk()
+root.title("Gesture Recognition Interface")
+root.geometry("1200x650")
+root.configure(bg="#f2f0f7")
+
+
+# ================= HEADER =================
+header = tk.Frame(root, bg="#6C3EB8", height=60)
+header.pack(fill="x")
+
+title = tk.Label(header, text="Gesture Recognition Interface",
+                 bg="#6C3EB8", fg="white",
+                 font=("Arial", 16, "bold"))
+title.pack(side="left", padx=20, pady=15)
+
+
+# Buttons
+def start_camera():
+    global cap, camera_running
+    if not camera_running:
+        cap = cv2.VideoCapture(0)
+        camera_running = True
+        update_frame()
+
+def pause_camera():
+    global camera_running
+    camera_running = False
+
+def settings():
+    print("Settings Clicked")
+
+
+btn_start = tk.Button(header, text="▶ Start",
+                      bg="#8E5BE8", fg="white",
+                      command=start_camera)
+btn_start.pack(side="right", padx=10)
+
+btn_pause = tk.Button(header, text="⏸ Pause",
+                      bg="#8E5BE8", fg="white",
+                      command=pause_camera)
+btn_pause.pack(side="right")
+
+btn_settings = tk.Button(header, text="⚙ Settings",
+                         bg="#8E5BE8", fg="white",
+                         command=settings)
+btn_settings.pack(side="right", padx=10)
+
+
+# ================= MAIN LAYOUT =================
+main_frame = tk.Frame(root, bg="#f2f0f7")
+main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+# -------- LEFT (Camera Feed) --------
+left_frame = tk.Frame(main_frame, bg="white", bd=2, relief="ridge")
+left_frame.pack(side="left", fill="both", expand=True)
+
+video_label = tk.Label(left_frame)
+video_label.pack()
+
+gesture_label = tk.Label(left_frame,
+                         text="",
+                         bg="#8E5BE8",
+                         fg="white",
+                         font=("Arial", 12, "bold"))
+gesture_label.place(x=20, y=20)
+
+
+# -------- RIGHT PANEL --------
+right_frame = tk.Frame(main_frame, bg="#ffffff", width=350)
+right_frame.pack(side="right", fill="y", padx=20)
+
+# ---- Distance Measurement Card ----
+dist_card = tk.LabelFrame(right_frame,
+                          text="Distance Measurement",
+                          font=("Arial", 11, "bold"),
+                          bg="white")
+dist_card.pack(fill="x", pady=10)
+
+distance_value = tk.Label(dist_card,
+                          text="0",
+                          font=("Arial", 24, "bold"),
+                          bg="white",
+                          fg="#6C3EB8")
+distance_value.pack(pady=10)
+
+distance_unit = tk.Label(dist_card,
+                         text="millimeters",
+                         bg="white")
+distance_unit.pack()
+
+progress = ttk.Progressbar(dist_card,
+                           orient="horizontal",
+                           length=250,
+                           mode="determinate",
+                           maximum=150)
+progress.pack(pady=10)
+
+
+# ---- Gesture States Card ----
+state_card = tk.LabelFrame(right_frame,
+                           text="Gesture States",
+                           font=("Arial", 11, "bold"),
+                           bg="white")
+state_card.pack(fill="x", pady=20)
+
+state_open = tk.Label(state_card,
+                      text="🤚 Open Hand   Distance > 80mm",
+                      bg="white",
+                      font=("Arial", 14, "bold"),
+                      anchor="w")
+state_open.pack(fill="x", padx=15, pady=8)
+
+state_pinch = tk.Label(state_card,
+                       text="🤏 Pinch   20mm < Distance < 80mm",
+                       bg="white",
+                       font=("Arial", 14, "bold"),
+                       anchor="w")
+state_pinch.pack(fill="x", padx=15, pady=8)
+
+state_closed = tk.Label(state_card,
+                        text="✊ Closed   Distance < 20mm",
+                        bg="white",
+                        font=("Arial", 14, "bold"),
+                        anchor="w")
+state_closed.pack(fill="x", padx=15, pady=8)
+
+
+# ================= CAMERA UPDATE =================
+def update_frame():
+    global camera_running
+
+    if camera_running and cap:
+        success, img = cap.read()
+        if not success:
+            return
+
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = hands.process(img_rgb)
+
+        gesture = ""
+        distance = 0
+
+        if results.multi_hand_landmarks:
+
+                # ✅ Take only the first detected hand
+                handLms = results.multi_hand_landmarks[0]
+                thumb = handLms.landmark[4]
+                index = handLms.landmark[8]
+
+                h, w, _ = img.shape
+                x1, y1 = int(thumb.x * w), int(thumb.y * h)
+                x2, y2 = int(index.x * w), int(index.y * h)
+
+                distance = int(math.hypot(x2 - x1, y2 - y1))
+
+                # Gesture classification
+                if distance < 20:
+                    gesture = "Closed"
+                elif distance < 80:
+                    gesture = "Pinch Gesture"
+                else:
+                    gesture = "Open Hand"
+
+                # Drawing
+                cv2.circle(img, (x1, y1), 10, (255, 0, 255), -1)
+                cv2.circle(img, (x2, y2), 10, (255, 0, 255), -1)
+                cv2.line(img, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+                cv2.putText(img, f"{distance} mm",
+                            (x1 + 20, y1 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8, (0, 255, 255), 2)
+
+                mp_draw.draw_landmarks(
+                    img, handLms,
+                    mp_hands.HAND_CONNECTIONS)
+
+        # Update UI values
+        distance_value.config(text=str(distance))
+        progress["value"] = distance
+        gesture_label.config(text=gesture)
+
+        # Convert to Tkinter image
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(img)
+        imgtk = ImageTk.PhotoImage(image=img)
+        video_label.imgtk = imgtk
+        video_label.configure(image=imgtk)
+
+        video_label.after(10, update_frame)
+
+
+root.mainloop()
